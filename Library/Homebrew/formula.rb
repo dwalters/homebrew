@@ -22,6 +22,7 @@
 #  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 require 'download_strategy'
+require 'open-uri'
 
 class FormulaUnavailableError <RuntimeError
   def initialize name
@@ -36,7 +37,7 @@ end
 # Derive and define at least @url, see Library/Formula for examples
 class Formula
   # Homebrew determines the name
-  def initialize name='__UNKNOWN__'
+  def initialize name='__UNKNOWN__', path=nil
     set_instance_variable 'url'
     set_instance_variable 'head'
     set_instance_variable 'specs'
@@ -49,6 +50,9 @@ class Formula
     raise if @url.nil?
     @name=name
     validate_variable :name
+
+    @path=path
+    validate_variable :path
 
     set_instance_variable 'version'
     @version ||= Pathname.new(@url).version
@@ -75,11 +79,7 @@ class Formula
     HOMEBREW_CELLAR+@name+@version
   end
 
-  def path
-    self.class.path name
-  end
-
-  attr_reader :url, :version, :homepage, :name, :specs
+  attr_reader :url, :version, :homepage, :name, :specs, :path
 
   def bin; prefix+'bin' end
   def sbin; prefix+'sbin' end
@@ -182,13 +182,46 @@ class Formula
 
   def self.factory name
     return name if name.kind_of? Formula
-    path = Pathname.new(name)
-    if path.absolute?
-      require name
+
+    formula_path = if name =~ %r[^\w+://]
+      url = URI.parse(name)
+
+      # due to the way the installation step currently works, the formula is
+      # expected to reside in a local file and must be named appropriately,
+      # so we go ahead and store it in a temporary directory here.
+
+      tmp = Pathname.new `/usr/bin/mktemp -d -t homebrew.XXXX`.strip
+      raise "Couldn't create temporary directory" if not tmp.directory? or $? != 0
+
+      basename = File.basename(url.path)
+      path = Pathname.new(tmp + basename)
+      path.open("w") do |f|
+        script = url.read
+        f.write script
+      end
+      require path
       name = path.stem
+
+      at_exit do
+        path.unlink
+        tmp.unlink
+      end
+
+      path
     else
-      require self.path(name)
+      name = name.downcase
+
+      path = Pathname.new(name)
+      if path.absolute?
+        require name
+        name = path.stem
+      else
+        path = self.path(name)
+        require path
+      end
+      path
     end
+
     begin
       klass_name =self.class_s(name)
       klass = eval(klass_name)
@@ -199,7 +232,7 @@ class Formula
       puts "Double-check the name of the class in that formula."
       raise LoadError
     end
-    return klass.new(name)
+    return klass.new(name, formula_path)
   rescue LoadError
     raise FormulaUnavailableError.new(name)
   end

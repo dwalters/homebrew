@@ -34,7 +34,7 @@ module HomebrewArgvExtension
   end
   def formulae
     require 'formula'
-    @formulae ||= downcased_unique_named.collect {|name| Formula.factory name}
+    @formulae ||= named.uniq.collect {|name| Formula.factory name}
     raise FormulaUnspecifiedError if @formulae.empty?
     @formulae
   end
